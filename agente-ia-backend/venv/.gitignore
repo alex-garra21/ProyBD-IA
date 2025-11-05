@@ -1,0 +1,9 @@
+# Ignorar el entorno virtual de Python
+venv/
+# Archivos compilados y de caché
+__pycache__/
+*.pyc
+# Base de datos local
+*.sqlite
+# Archivos de configuración de VS Code (opcional)
+.vscode/
