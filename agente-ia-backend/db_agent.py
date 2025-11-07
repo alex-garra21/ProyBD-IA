@@ -12,7 +12,7 @@ def classify_intent(text):
     if any(keyword in text_lower for keyword in select_keywords):
         return "SELECT"
 
-    insert_keywords = ["insertar", "agregar", "crear", "nuevo"]
+    insert_keywords = ["insertar", "agregar", "crear", "nuevo", "ingresar"]
     if any(keyword in text_lower for keyword in insert_keywords):
         return "INSERT"
         
