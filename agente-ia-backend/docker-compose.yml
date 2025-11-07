@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14-alpine # Usamos una imagen de PostgreSQL ligera
+    restart: always
+    environment:
+      # --- CREDENCIALES ---
+      POSTGRES_USER: agente_user      # Usuario de la BD (Lo usaremos en api.py)
+      POSTGRES_PASSWORD: password     # Contraseña (Lo usaremos en api.py)
+      POSTGRES_DB: hr_database        # Nombre de la BD (Lo usaremos en api.py)
+    ports:
+      - "5432:5432" # Mapea el puerto del contenedor al puerto local
+    volumes:
+      # Persistencia de datos: Guarda los datos de la BD en una carpeta local
+      - postgres_data:/var/lib/postgresql/data/
+    
+volumes:
+  postgres_data:
