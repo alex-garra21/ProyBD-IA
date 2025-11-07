@@ -1,17 +1,16 @@
-# api.py (Versión Completa y Corregida)
+# api.py
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS 
-from db_agent import process_query 
 from flask_sqlalchemy import SQLAlchemy 
-from sqlalchemy import Numeric, ForeignKey
+from sqlalchemy import Numeric, ForeignKey, inspect
 import os
 
 # --- 1. CONFIGURACIÓN DE LA APLICACIÓN Y LA BASE DE DATOS (PostgreSQL con Docker) ---
 app = Flask(__name__)
 CORS(app) 
 
-# Conexión a la base de datos Docker (de tu docker-compose.yml)
+# Conexión a la base de datos Docker
 DB_URL = 'postgresql://agente_user:password@localhost:5432/hr_database'
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DB_URL
@@ -21,38 +20,77 @@ db = SQLAlchemy(app)
 # -----------------------------------------------------------------------------------
 
 
-# --- 2. DEFINICIÓN DE MODELOS (Esquema HR de Oracle adaptado) ---
+# --- 2. DEFINICIÓN DE MODELOS (Esquema HR completo adaptado) ---
 
-# Tabla 1: JOB (Trabajos)
+# Tabla 1: REGIONS
+class Region(db.Model):
+    __tablename__ = 'regions'
+    region_id = db.Column(db.Integer, primary_key=True)
+    region_name = db.Column(db.String(25), nullable=False, unique=True)
+    countries = db.relationship('Country', backref='region', lazy=True)
+
+# Tabla 2: COUNTRIES
+class Country(db.Model):
+    __tablename__ = 'countries'
+    country_id = db.Column(db.String(2), primary_key=True)
+    country_name = db.Column(db.String(40), nullable=False)
+    region_id = db.Column(db.Integer, db.ForeignKey('regions.region_id'), nullable=False)
+    locations = db.relationship('Location', backref='country', lazy=True)
+
+# Tabla 3: LOCATIONS
+class Location(db.Model):
+    __tablename__ = 'locations'
+    location_id = db.Column(db.Integer, primary_key=True)
+    street_address = db.Column(db.String(40), nullable=True)
+    postal_code = db.Column(db.String(12), nullable=True)
+    city = db.Column(db.String(30), nullable=False)
+    state_province = db.Column(db.String(25), nullable=True)
+    country_id = db.Column(db.String(2), db.ForeignKey('countries.country_id'), nullable=False)
+    departments = db.relationship('Department', backref='location', lazy=True)
+
+# Tabla 4: JOB (Trabajos)
 class Job(db.Model):
     __tablename__ = 'jobs'
     job_id = db.Column(db.String(10), primary_key=True)
     job_title = db.Column(db.String(35), nullable=False)
+    min_salary = db.Column(db.Numeric(8, 2), nullable=True)
+    max_salary = db.Column(db.Numeric(8, 2), nullable=True)
     employees = db.relationship('Employee', backref='job', lazy=True)
 
-# Tabla 2: DEPARTMENT (Departamentos)
+# Tabla 5: DEPARTMENT (Departamentos)
 class Department(db.Model):
     __tablename__ = 'departments'
     department_id = db.Column(db.Integer, primary_key=True)
     department_name = db.Column(db.String(30), unique=True, nullable=False)
+    manager_id = db.Column(db.Integer, nullable=True)
+    location_id = db.Column(db.Integer, db.ForeignKey('locations.location_id'), nullable=True)
     employees = db.relationship('Employee', backref='department', lazy=True)
+    
+    # Nuevo: Agregamos to_dict para las tablas de soporte
+    def to_dict(self):
+        return {
+            'ID': self.department_id,
+            'NOMBRE': self.department_name,
+            'LOCATION_ID': self.location_id,
+        }
 
-# Tabla 3: EMPLOYEE (Empleados - la tabla central)
-# ¡COLUMNAS FALTANTES AÑADIDAS AQUÍ!
+# Tabla 6: EMPLOYEE (Empleados - la tabla central)
 class Employee(db.Model):
     __tablename__ = 'employees'
     employee_id = db.Column(db.Integer, primary_key=True)
     first_name = db.Column(db.String(20), nullable=False)
     last_name = db.Column(db.String(25), nullable=False)
     email = db.Column(db.String(25), unique=True, nullable=False)
-    hire_date = db.Column(db.String(10), nullable=True) # Simplificado
+    phone_number = db.Column(db.String(20), nullable=True)
+    hire_date = db.Column(db.String(10), nullable=True)
     salary = db.Column(db.Numeric(8, 2), nullable=False)
+    commission_pct = db.Column(db.Numeric(2, 2), nullable=True)
     
     # Claves Foráneas
     job_id = db.Column(db.String(10), db.ForeignKey('jobs.job_id'), nullable=True)
     department_id = db.Column(db.Integer, db.ForeignKey('departments.department_id'), nullable=True)
 
-    # RELACIÓN JERÁRQUICA (Manager)
+    # RELACIÓN JERÁRQUICA (Manager - Apunta a sí misma)
     manager_id = db.Column(db.Integer, db.ForeignKey('employees.employee_id'), nullable=True)
     manager = db.relationship(
         'Employee', 
@@ -60,21 +98,23 @@ class Employee(db.Model):
         backref=db.backref('subordinates', lazy=True), 
         uselist=False
     )
-
+    
     def to_dict(self):
-        """Convierte el objeto Employee a un diccionario para la respuesta JSON."""
+        """Método simple para el SELECT sin mapeo dinámico (no usado en db_agent.py, pero bueno tenerlo)."""
         return {
             'id': self.employee_id,
             'nombre': f"{self.first_name} {self.last_name}",
-            'email': self.email,
             'salario': float(self.salary),
-            'departamento_id': self.department_id
         }
 
 # -----------------------------------------------------------------------------------
 
 
 # --- 3. DEFINICIÓN DEL ENDPOINT DE LA API ---
+# Importamos la función principal del agente AQUÍ, después de que todos los modelos están definidos
+from db_agent import process_query 
+# -----------------------------------------------------------------------------------
+
 @app.route('/ask-agent', methods=['POST'])
 def ask_agent():
     with app.app_context():
@@ -89,41 +129,26 @@ def ask_agent():
         
         return jsonify(agent_response)
 
-# -----------------------------------------------------------------------------------
 
 # --- 4. FUNCIÓN DE DIAGNÓSTICO E INICIO ---
 
 def setup_database(app, db):
-    """Crea tablas e inserta datos iniciales, forzando la visualización de errores."""
+    """Crea tablas e inserta datos iniciales SOLO si es necesario y respeta FKs."""
     print("--- [SETUP] Intentando crear tablas y datos iniciales ---")
     try:
+        # La BD de Docker ya se encarga de create_all() via los scripts SQL
+        # Pero esta llamada es útil para asegurar el mapeo de SQLAlchemy
         db.create_all()
-        print("✅ [SETUP] Tablas del esquema HR creadas con éxito.")
+        print("✅ [SETUP] Tablas del esquema HR creadas o mapeadas con éxito.")
         
-        if Department.query.count() == 0:
-            print("--- [SETUP] Base de datos vacía. Insertando datos de prueba HR...")
-            
-            # Insertar Departamentos
-            dep_sales = Department(department_id=10, department_name='Sales')
-            dep_it = Department(department_id=20, department_name='IT')
-            db.session.add_all([dep_sales, dep_it])
-            
-            # Insertar Trabajos
-            job_mng = Job(job_id='IT_MNG', job_title='IT Manager')
-            job_rep = Job(job_id='SAL_REP', job_title='Sales Representative')
-            db.session.add_all([job_mng, job_rep])
-            
-            # Insertar Empleados de prueba
-            db.session.add_all([
-                Employee(employee_id=100, first_name='Steven', last_name='King', email='SKING', salary=24000.00, department_id=10, job_id='IT_MNG', hire_date='2003-06-17'),
-                Employee(employee_id=101, first_name='Neena', last_name='Kochhar', email='NKOCHHAR', salary=17000.00, department_id=10, job_id='SAL_REP', hire_date='2005-09-21'),
-                Employee(employee_id=200, first_name='Alberto', last_name='Perez', email='APERZ', salary=4500.00, department_id=20, job_id='SAL_REP', hire_date='2007-08-10')
-            ])
-            db.session.commit()
-            print("✅ [SETUP] Datos de prueba HR insertados con éxito.")
+        # --- LÓGICA CLAVE: Confiar en Docker para la inserción ---
+        # Si las tablas no se llenaron con Docker (ej. si el volumen falló), verificamos.
+        # Usamos la clase Employee definida en este archivo
+        if db.session.query(Employee).count() > 0:
+            print("--- [SETUP] La base de datos ya contiene datos (cargados por Docker).")
         else:
-            print("--- [SETUP] La base de datos ya contiene datos.")
-
+            print("--- [SETUP] La base de datos está vacía. ¡Verifique que el script 2-hr_data.sql se ejecute en Docker!")
+            
     except Exception as e:
         print("\n" + "="*50)
         print(f"❌ ERROR FATAL AL INICIALIZAR LA BASE DE DATOS ❌")
@@ -144,4 +169,3 @@ if __name__ == '__main__':
             
         except Exception as e:
             print("🔴 [FLASK] No se puede iniciar el servidor debido a un fallo en la base de datos.")
-
